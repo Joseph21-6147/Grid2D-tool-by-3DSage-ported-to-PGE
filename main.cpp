@@ -3,78 +3,82 @@
 //
 // Ported from C / OpenGL to C++ and olc::PixelGameEngine - by Javidx9
 // Port by Joseph21
-// February 25, 2024
+// February 26, 2024
+//
+// Work In Progress!!
 
 
 #define OLC_PGE_APPLICATION
 #include "olcPixelGameEngine.h"
 
 
-#define res          1                     // 1=SW_BASExSH_BASE 2=2xSW_BASEx2xSH_BASE etc
-#define SW_BASE      160
-#define SH_BASE      120
-#define SW           SW_BASE*res           // screen width
-#define SH           SH_BASE*res           // screen height
-#define SW2          (SW/2)                // half of screen width
-#define SH2          (SH/2)                // half of screen height
-#define pixelScale   4/res                 // OpenGL pixel scale
-#define GLSW         (SW*pixelScale)       // OpenGL window width
-#define GLSH         (SH*pixelScale)       // OpenGL window height
+// screen size in logical pixels: SW x SH
+#define SW           160                   // screen width
+#define SH           120                   // screen height
+#define pixelSize    4                     // OpenGL pixel scale
+// screen size in physical pixels: GLSW x GLSH
+#define GLSW         (SW * pixelSize)      // OpenGL window width
+#define GLSH         (SH * pixelSize)      // OpenGL window height
 
-#define LEVEL_FILE   "level.txt"
+#define PI          3.1415926535f
+
+// filename for file to load from/save to
+#define LEVEL_FILE   "../textures/level.txt"
 
 
-// include all textures files
-#include "T_NUMBERS.h"
-#include "T_VIEW2D.h"
-#include "T_00.h"
-#include "T_01.h"
-#include "T_02.h"
-#include "T_03.h"
-#include "T_04.h"
-#include "T_05.h"
-#include "T_06.h"
-#include "T_07.h"
-#include "T_08.h"
-#include "T_09.h"
-#include "T_10.h"
-#include "T_11.h"
-#include "T_12.h"
-#include "T_13.h"
-#include "T_14.h"
-#include "T_15.h"
-#include "T_16.h"
-#include "T_17.h"
-#include "T_18.h"
-#include "T_19.h"
-#include "T_20.h"
+// include all texture files converted into code (see notes)
+#include "../textures/T_VIEW2D.h"          // background with grid and buttons
+#include "../textures/T_NUMBERS.h"         // texture containing numbers
 
-int numText = 20;                        // number of textures - 1
-int numSect =  0;                        // number of sectors
-int numWall =  0;                        // number of walls
+#include "../textures/T_00.h"              // "user defined" textures
+#include "../textures/T_01.h"
+#include "../textures/T_02.h"
+#include "../textures/T_03.h"
+#include "../textures/T_04.h"
+#include "../textures/T_05.h"
+#include "../textures/T_06.h"
+#include "../textures/T_07.h"
+#include "../textures/T_08.h"
+#include "../textures/T_09.h"
+#include "../textures/T_10.h"
+#include "../textures/T_11.h"
+#include "../textures/T_12.h"
+#include "../textures/T_13.h"
+#include "../textures/T_14.h"
+#include "../textures/T_15.h"
+#include "../textures/T_16.h"
+#include "../textures/T_17.h"
+#include "../textures/T_18.h"
+#include "../textures/T_19.h"
+#include "../textures/T_20.h"
+#include "../textures/T_21.h"
+
+int numText = 21;                          // number of textures - 1 (acts as last possible index for textures)
+int numSect =  0;                          // number of sectors - used by save(), set by load()
+int numWall =  0;                          // number of walls   - same
 
 //------------------------------------------------------------------------------
 
 // aux. struct for timing
 typedef struct {
     int fr1, fr2;          // frame 1, frame 2, to create constant frame rate (in seconds)
-} myTime;
-myTime T;                  // T is the global time struct
+} Timer;
+Timer T;                   // T is the global time struct
 
 // lookup table for conversion of degrees to sine/cosine values
 typedef struct {
     float cos[360];        // save sin and cos values for [0, 359] degrees
     float sin[360];
-} math;
-math M;                    // M is the global lookup table for cos and sin
+} TrigLookup;
+TrigLookup M;              // M is the global lookup table for cos and sin
 
 // player info
 typedef struct {
     int x, y, z;           // player position. Z is up
     int a;                 // player angle of rotation left right
     int l;                 // variable to look up and down
-} player;
-player P;                  // P is the global var for player info
+} Player;
+Player P;                  // P is the global var for player info
 
 // walls info
 typedef struct {
@@ -82,8 +86,8 @@ typedef struct {
     int x2, y2;            // bottom line point 2
     int wt, u, v;          // wall texture and u/v tile
     int shade;             // shade of the wall
-} walls;
-walls W[256];              // a max of 256 walls are supported
+} Wall;
+Wall W[256];               // a max of 256 walls are supported
 
 // sectors info
 typedef struct {
@@ -92,8 +96,8 @@ typedef struct {
     int d;                 // add y distances to sort drawing order
     int st, ss;            // surface texture, surface scale
     int surf[SW];          // to hold points for surfaces
-} sectors;
-sectors S[128];            // a max of 128 sectors are supported
+} Sector;
+Sector S[128];            // a max of 128 sectors are supported
 
 // texture map
 typedef struct {
@@ -111,8 +115,8 @@ typedef struct {
     int scale;             // scale down grid
     int move[4];           // 0=wall ID, 1=v1v2, 2=wallID, 3=v1v2
     int selS, selW;        // select sector/wall
-} grid;
-grid G;                    // this struct holds all the data for controlling the editor
+} Grid;
+Grid G;                    // this struct holds all the data for controlling the editor
 
 
 //------------------------------------------------------------------------------
@@ -122,8 +126,8 @@ class Grid2D_port : public olc::PixelGameEngine {
 public:
     Grid2D_port() {
         sAppName = "3DSage's Grid2D (by Joseph21)";
-        sAppName.append( " - S:(" + std::to_string( SW         ) + ", " + std::to_string( SH         ) + ")" );
-        sAppName.append(  ", P:(" + std::to_string( pixelScale ) + ", " + std::to_string( pixelScale ) + ")" );
+        sAppName.append( " - S:(" + std::to_string( SW        ) + ", " + std::to_string( SH        ) + ")" );
+        sAppName.append(  ", P:(" + std::to_string( pixelSize ) + ", " + std::to_string( pixelSize ) + ")" );
     }
 
 private:
@@ -148,7 +152,6 @@ private:
                 }
                 // player position
                 fp << std::endl << P.x << " " << P.y << " " << P.z << " " << P.a << " " << P.l << std::endl;
-
             }
             fp.close();
         }
@@ -174,8 +177,8 @@ private:
         }
     }
 
-    void initGlobals() {       // define grid globals
-
+    // set all members of the Grid struct type G (global variable) to initial values
+    void initGlobals() {
         G.scale =  4;      // scale down grid
         G.selS  =  0;      // select sector
         G.selW  =  0;      // select wall
@@ -227,16 +230,16 @@ private:
     void draw2D() {
         int c;
         // draw background using the T_VIEW2D sprite
-        for(int y = 0; y < SH_BASE; y++) {
-            int y2 = (SH - 1 - y) * 3 * SW_BASE; //invert height, x3 for rgb, x15 for texture width
-            for(int x = 0; x < SW_BASE; x++) {
+        for(int y = 0; y < SH; y++) {
+            int y2 = (SH - 1 - y) * 3 * SW; //invert height, x3 for rgb, x15 for texture width
+            for(int x = 0; x < SW; x++) {
                 int pixel = x * 3 + y2;
                 int r = T_VIEW2D[pixel + 0];
                 int g = T_VIEW2D[pixel + 1];
                 int b = T_VIEW2D[pixel + 2];
                 // what are the magic numbers below?
                 if(G.addSect > 0 && y > 48 - 8 && y < 56 - 8 && x > 144) {
-                    r = r >> 1;    //darken sector button (by halfing rgb values )
+                    r = r >> 1;    // darken sector button (by halfing rgb values )
                     g = g >> 1;
                     b = b >> 1;
                 }
@@ -245,9 +248,7 @@ private:
         }
         // draw sectors
         for (int s = 0; s < numSect; s++) {              // iterate all sectors
-
             for (int w = S[s].ws; w < S[s].we; w++) {    // iterate all walls for one sector
-
                 if (s == G.selS - 1) {                   // if this sector is selected
                     // set sector to globals
                     S[G.selS - 1].z1 = G.z1;
@@ -277,17 +278,17 @@ private:
         }
 
         // draw player
-        int dx = M.sin[P.a] * 12;
+        int dx = M.sin[P.a] * 12;   // for angle indicator of player
         int dy = M.cos[P.a] * 12;
-        drawPixel(  P.x       / G.scale,  P.y       / G.scale, 0, 255, 0 );
-        drawPixel( (P.x + dx) / G.scale, (P.y + dy) / G.scale, 0, 175, 0 );
+        drawPixel(  P.x       / G.scale,  P.y       / G.scale, 0, 255, 0 );   // show player as a bright green pixel
+        drawPixel( (P.x + dx) / G.scale, (P.y + dy) / G.scale, 0, 175, 0 );   // show angle indicator as less bright green
 
         // draw wall texture
         float tx = 0, tx_stp = Textures[G.wt].w / 15.0;
         float ty = 0, ty_stp = Textures[G.wt].h / 15.0;
-        for(int y = 0; y < 15; y++) {
+        for (int y = 0; y < 15; y++) {
             tx = 0;
-            for(int x = 0; x < 15; x++) {
+            for (int x = 0; x < 15; x++) {
                 int x2 = (int)tx % Textures[G.wt].w;
                 tx += tx_stp;
                 int y2 = (int)ty % Textures[G.wt].h;
@@ -324,13 +325,14 @@ private:
         drawNumber( 148, 18, G.selW ); // wall number
     }
 
-    //darken buttons
+    // darken buttons
     int dark = 0;
 
     void darken() {
         int xs, xe, ys, ye;
         switch (dark) {
-            case  0:                                                             return;   //no buttons were clicked
+            case  0:                                                             return;   // no buttons were clicked
+
             case  1: xs =   0; xe =  15; ys =   0 / G.scale; ye =  32 / G.scale; break;    // save button
             case  2: xs =   0; xe =   3; ys =  96 / G.scale; ye = 128 / G.scale; break;    // u left
             case  3: xs =   4; xe =   8; ys =  96 / G.scale; ye = 128 / G.scale; break;    // u right
@@ -354,13 +356,13 @@ private:
             for(int x = xs; x < xe; x++) {
 //                glColor4f(0, 0, 0, 0.4);
 //                glBegin(GL_POINTS);
-//                glVertex2i(x * pixelScale + 2 + 580, (SH_BASE - y)*pixelScale);
+//                glVertex2i(x * pixelSize + 2 + 580, (SH_BASE - y)*pixelSize);
 //                glEnd();
 
                 // I think what's happening here ^^ is that the pixels in the nested for loop range
                 // are darkened by multiplying them with 0.4f. So I mimick this effect
-                int nPixX = x * pixelScale + 2 + 580;
-                int nPixY = (SH_BASE - y) * pixelScale;
+                int nPixX = x * pixelSize + 2 + 580;
+                int nPixY = (SH - y) * pixelSize;
                 olc::Sprite *screenPtr = GetDrawTarget();
                 olc::Pixel curPix = screenPtr->GetPixel( nPixX, nPixY );
                 curPix *= 0.4f;
@@ -369,11 +371,20 @@ private:
         }
     }
 
+    int nFysScrnW = SW * pixelSize;
+    int nFysScrnH = SH * pixelSize;
+    int nButtonLt = int( nFysScrnW * 0.900f );
+    int nButtonRt = int( nFysScrnW * 1.000f );
+    int nButton1Q = int( nFysScrnW * 0.925f );
+    int nButton2Q = int( nFysScrnW * 0.950f );
+    int nButton3Q = int( nFysScrnW * 0.975f );
+
+
     void mouse( int x, int y ) {
 
         //round mouse x,y
-        G.mx = ((     x / pixelScale + 4) >> 3) << 3;
-        G.my = ((SH - y / pixelScale + 4) >> 3) << 3;   // round to nearest 8th
+        G.mx = ((     x / pixelSize + 4) >> 3) << 3;
+        G.my = ((SH - y / pixelSize + 4) >> 3) << 3;   // round to nearest 8th
 
         // ee = exclusive-exclusive, so exclusive comparison on both boundaries
         auto in_range_ee = [=]( int a, int a_low, int a_hgh ) {
@@ -383,7 +394,7 @@ private:
         if (GetMouse( 0 ).bPressed) {
             // 2D view buttons only
             if(x > 580) {
-                //2d 3d view buttons
+                // 2d 3d view buttons
                 if (in_range_ee( y, 0, 32 )) {
                     save();
                     dark = 1;
@@ -521,17 +532,11 @@ private:
                     W[numWall - 1].y2 = G.my * G.scale; //x2,y2
                     //automatic shading
                     float ang = atan2f( W[numWall - 1].y2 - W[numWall - 1].y1, W[numWall - 1].x2 - W[numWall - 1].x1 );
-                    ang = (ang * 180) / 3.1415926535f; //radians to degrees
-                    if(ang < 0) {
-                        ang += 360;   //correct negative
-                    }
-                    int shade = ang;         //shading goes from 0-90-0-90-0
-                    if(shade > 180) {
-                        shade = 180 - (shade - 180);
-                    }
-                    if(shade > 90) {
-                        shade = 90 - (shade - 90);
-                    }
+                    ang = (ang * 180) / PI;      // radians to degrees
+                    if(ang < 0) { ang += 360; }  // correct negative
+                    int shade = ang;             // shading goes from 0-90-0-90-0
+                    if(shade > 180) { shade = 180 - (shade - 180); }
+                    if(shade >  90) { shade =  90 - (shade -  90); }
                     W[numWall - 1].shade = shade;
 
                     // check if sector is closed
@@ -630,21 +635,21 @@ private:
             if (GetKey( olc::Key::S ).bPressed) { P.x -= dx; P.y -= dy; }
         }
         // strafe left, right
-//        if (GetKey( olc::Key::LEFT  ).bPressed) { P.x += dy; P.y += dx; }
         if (GetKey( olc::Key::LEFT  ).bPressed) { P.x -= dy; P.y += dx; }
-//        if (GetKey( olc::Key::RIGHT ).bPressed) { P.x -= dy; P.y -= dx; }
         if (GetKey( olc::Key::RIGHT ).bPressed) { P.x += dy; P.y -= dx; }
     }
 
+    // somehow the timing mechanism is hampering the rendering
+    // so i disabled the timing mech (for now)
     void display( float fElapsedTime ) {
-        float fDisplayThreshold = 0.01f;
-        T.fr1 += fElapsedTime;
-        if(T.fr1 - T.fr2 >= fDisplayThreshold) {                  //only draw 20 frames/second
+//        float fDisplayThreshold = 0.01f;
+//        T.fr1 += fElapsedTime;
+//        if(T.fr1 - T.fr2 >= fDisplayThreshold) {                  //only draw frames/second according to threshold
             draw2D();
             darken();
 
-            T.fr2 -= fDisplayThreshold;
-        }
+//            T.fr2 -= fDisplayThreshold;
+//        }
     }
 
     void init() {
@@ -661,8 +666,8 @@ private:
 
         //store sin/cos in degrees
         for(int x = 0; x < 360; x++) {                 //precalulate sin cos in degrees
-            M.cos[x] = cos( x / 180.0 * 3.1415926535f );
-            M.sin[x] = sin( x / 180.0 * 3.1415926535f );
+            M.cos[x] = cos( x / 180.0 * PI );
+            M.sin[x] = sin( x / 180.0 * PI );
         }
 
         //define textures
@@ -687,6 +692,7 @@ private:
         Textures[18].name = T_18; Textures[18].h = T_18_HEIGHT; Textures[18].w = T_18_WIDTH;
         Textures[19].name = T_19; Textures[19].h = T_19_HEIGHT; Textures[19].w = T_19_WIDTH;
         Textures[20].name = T_20; Textures[20].h = T_20_HEIGHT; Textures[20].w = T_20_WIDTH;
+        Textures[21].name = T_21; Textures[21].h = T_21_HEIGHT; Textures[21].w = T_21_WIDTH;
     }
 
     int nOldMouseX, nOldMouseY;    // cache previous mouse position (to detect mouse movement)
@@ -711,19 +717,22 @@ public:
 
     bool OnUserUpdate( float fElapsedTime ) override {
 
+        // create a tick that triggers every ... seconds
         fTotalTime += fElapsedTime;
+        float fTickThreshold = 0.2f;
         bool bTick = false;
-        if (fTotalTime - fCachedTime > 1.0f) {
+        if (fTotalTime - fCachedTime > fTickThreshold) {
             bTick = true;
-            fCachedTime += 1.0f;
+            fCachedTime += fTickThreshold;
         }
 
+        // produce some console output if the info flag is set
         if (bInfoFlag) {
             if (bTick) {
                 std::cout << int( fTotalTime ) << std::endl;
             }
         }
-
+        // trigger the info flag
         if (GetKey( olc::Key::I ).bPressed) {
             bInfoFlag = !bInfoFlag;
         }
@@ -733,9 +742,9 @@ public:
         // grab mouse coordinates
         int nMouseX = GetMouseX();
         int nMouseY = GetMouseY();
-        // the code appears to work with absolute coordinates, so multiply PGE coordinates by pixelScale
-        int nUseMouseX = nMouseX * pixelScale;
-        int nUseMouseY = nMouseY * pixelScale;
+        // the code appears to work with absolute coordinates, so multiply PGE coordinates by pixelSize
+        int nUseMouseX = nMouseX * pixelSize;
+        int nUseMouseY = nMouseY * pixelSize;
         // check if mouse moved since prev. frame
         if (nMouseX != nOldMouseX || nMouseY != nOldMouseY) {
             // if so, call mouseMoving()
@@ -778,7 +787,7 @@ public:
 int main()
 {
 	Grid2D_port demo;
-	if (demo.Construct( SW, SH, pixelScale, pixelScale )) {
+	if (demo.Construct( SW, SH, pixelSize, pixelSize )) {
 		demo.Start();
 	} else {
         std::cout << "ERROR: main() --> Failure to construct window ..." << std::endl;
